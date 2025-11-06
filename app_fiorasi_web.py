@@ -1,177 +1,138 @@
-import os
-from zipfile import ZipFile
-from textwrap import dedent
-
-# === Crear estructura de carpetas ===
-base = "Ford_Fiorasi_Procesador_Antecedentes"
-os.makedirs(base, exist_ok=True)
-
-# === Archivo: app_fiorasi_web.py ===
-app_code = dedent('''\
 import streamlit as st
 import pandas as pd
-import re
-from datetime import datetime
-from io import BytesIO
-from docx import Document
+import io
 from PyPDF2 import PdfReader
+from docx import Document
+from datetime import datetime
+from PIL import Image
 
-st.set_page_config(page_title="Ford Fiorasi – Procesador de Antecedentes", page_icon="🚗", layout="wide")
+# --- Configuración inicial ---
+st.set_page_config(page_title="Ford Fiorasi – Procesador de Antecedentes", page_icon="⚙️", layout="wide")
 
-# Colores configurables (por defecto Ford)
-if "color_principal" not in st.session_state:
-    st.session_state.color_principal = "#0047AB"
-    st.session_state.color_fondo = "#FFFFFF"
+# --- Variables de color configurables ---
+if "color_primario" not in st.session_state:
+    st.session_state["color_primario"] = "#0047AB"  # Azul Ford
+if "color_fondo" not in st.session_state:
+    st.session_state["color_fondo"] = "#FFFFFF"  # Blanco
 
-def extraer_texto_docx(file):
-    doc = Document(file)
-    return "\\n".join([p.text for p in doc.paragraphs])
+# --- Encabezado con logo ---
+col1, col2, col3 = st.columns([1, 3, 1])
+with col2:
+    try:
+        logo = Image.open("logo_fiorasi.png")
+        st.image(logo, use_container_width=False)
+    except Exception:
+        st.markdown("### Ford Fiorasi – Procesador de Antecedentes Disciplinarios")
 
-def extraer_texto_pdf(file):
-    texto = ""
-    pdf = PdfReader(file)
-    for page in pdf.pages:
-        texto += page.extract_text() or ""
-    return texto
+st.markdown(
+    f"<div style='text-align:center; color:{st.session_state['color_primario']}; font-size:26px; font-weight:600;'>"
+    "Procesador de Antecedentes Disciplinarios</div>",
+    unsafe_allow_html=True,
+)
 
-def detectar_tipo(texto):
-    t = texto.lower()
-    if "llamado de atención" in t or "llamado de atencion" in t:
-        return "Llamado de atención"
-    elif "apercibimiento" in t:
-        return "Apercibimiento"
-    elif "solicitud de descargo" in t:
-        return "Solicitud de descargo"
-    elif "descargo" in t and "contest" in t:
-        return "Contestación de descargo"
-    else:
-        return "No especificado"
-
-def detectar_fecha(texto):
-    match = re.search(r'(\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4})', texto)
-    if match:
-        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y"):
-            try:
-                return datetime.strptime(match.group(1), fmt).strftime("%d/%m/%Y")
-            except:
-                continue
-    return "No especificada"
-
-def detectar_nombre(texto):
-    match = re.search(r'(?:Sr\\.?|Sra\\.?|Empleado:)\\s*([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑ,\\s]+)', texto)
-    if match:
-        return re.sub(r"\\s{2,}", " ", match.group(1).strip())
-    return "No identificado"
-
-def detectar_contestacion(texto):
-    t = texto.lower()
-    return "Sí" if "descargo" in t or "contest" in t else "No"
-
-def extraer_descripcion(texto):
-    for linea in texto.split("\\n"):
-        if len(linea.strip()) > 40 and not linea.lower().startswith(("sr", "sra", "ref", "asunto")):
-            return linea.strip()
-    return "No especificada"
-
-# === Interfaz ===
-col_logo, col_titulo = st.columns([1, 4])
-with col_logo:
-    st.image("logo_fiorasi.png", width=120)
-with col_titulo:
-    st.markdown(f"<h2 style='color:{st.session_state.color_principal};margin-top:10px;'>Ford Fiorasi – Procesador de Antecedentes Disciplinarios</h2>", unsafe_allow_html=True)
-
-# Botón ajustes
+# --- Menú de ajustes ---
 with st.sidebar:
-    st.header("⚙️ Ajustes de interfaz")
-    st.session_state.color_principal = st.color_picker("Color principal", st.session_state.color_principal)
-    st.session_state.color_fondo = st.color_picker("Color de fondo", st.session_state.color_fondo)
-    if st.button("Restaurar colores Ford"):
-        st.session_state.color_principal = "#0047AB"
-        st.session_state.color_fondo = "#FFFFFF"
+    st.markdown("## ⚙️ Ajustes de apariencia")
+    st.session_state["color_primario"] = st.color_picker("Color institucional (Azul Ford)", st.session_state["color_primario"])
+    st.session_state["color_fondo"] = st.color_picker("Color de fondo", st.session_state["color_fondo"])
+    if st.button("🔄 Restaurar colores predeterminados"):
+        st.session_state["color_primario"] = "#0047AB"
+        st.session_state["color_fondo"] = "#FFFFFF"
 
-st.markdown(f"<div style='background-color:{st.session_state.color_fondo};padding:10px;border-radius:10px;'>", unsafe_allow_html=True)
-st.write("Automatiza la lectura de documentos laborales (.docx / .pdf) para generar la base disciplinaria institucional.")
-st.markdown("</div>", unsafe_allow_html=True)
+# --- Carga de archivos ---
+st.markdown("---")
+st.markdown("### 📂 Cargar archivos de antecedentes (PDF o Word)")
+archivos = st.file_uploader("Seleccionar múltiples archivos", type=["pdf", "docx"], accept_multiple_files=True)
 
-archivos = st.file_uploader("📂 Seleccione los archivos Word o PDF", type=["pdf", "docx"], accept_multiple_files=True)
+# --- Procesamiento ---
+def extraer_texto_pdf(archivo):
+    texto = ""
+    try:
+        reader = PdfReader(archivo)
+        for page in reader.pages:
+            texto += page.extract_text() + "\n"
+    except:
+        texto = ""
+    return texto.strip()
 
-if st.button("Procesar antecedentes"):
-    if not archivos:
-        st.warning("Debe cargar al menos un archivo.")
+def extraer_texto_docx(archivo):
+    texto = ""
+    try:
+        doc = Document(archivo)
+        for p in doc.paragraphs:
+            texto += p.text + "\n"
+    except:
+        texto = ""
+    return texto.strip()
+
+def procesar_archivo(nombre, contenido):
+    texto = contenido.lower()
+    data = {"Apellido y Nombre": "", "Fecha de Emisión": "", "Tipo de Antecedente": "", "Contestación": "No", "Resumen": ""}
+
+    # --- Nombre ---
+    for linea in texto.split("\n"):
+        if "sr." in linea or "sra." in linea or "srta." in linea:
+            data["Apellido y Nombre"] = linea.replace("sr.", "").replace("sra.", "").replace("srta.", "").strip().title()
+            break
+
+    # --- Fecha ---
+    posibles_fechas = [p for p in texto.split() if "/" in p or "-" in p]
+    if posibles_fechas:
+        try:
+            data["Fecha de Emisión"] = datetime.strptime(posibles_fechas[0], "%d/%m/%Y").strftime("%d/%m/%Y")
+        except:
+            data["Fecha de Emisión"] = posibles_fechas[0]
+
+    # --- Tipo de antecedente ---
+    if "llamado de atención" in texto:
+        data["Tipo de Antecedente"] = "Llamado de Atención"
+    elif "apercibimiento" in texto:
+        data["Tipo de Antecedente"] = "Apercibimiento"
+    elif "descargo" in texto:
+        data["Tipo de Antecedente"] = "Solicitud de Descargo"
     else:
-        registros = []
-        for archivo in archivos:
-            texto = extraer_texto_docx(archivo) if archivo.name.endswith(".docx") else extraer_texto_pdf(archivo)
-            registros.append({
-                "Apellido y Nombre": detectar_nombre(texto),
-                "Fecha de emisión": detectar_fecha(texto),
-                "Tipo de antecedente": detectar_tipo(texto),
-                "Descripción breve del hecho": extraer_descripcion(texto),
-                "¿Hubo contestación?": detectar_contestacion(texto),
-            })
-        df = pd.DataFrame(registros).sort_values("Apellido y Nombre")
-        resumen = []
-        for nombre, grupo in df.groupby("Apellido y Nombre"):
-            resumen.append({
-                "Apellido y Nombre": nombre,
-                "Cantidad de antecedentes": len(grupo),
-                "Tipos recibidos": ", ".join(grupo["Tipo de antecedente"].unique()),
-                "Última fecha registrada": grupo["Fecha de emisión"].iloc[-1],
-                "Síntesis contextual": " / ".join(set(grupo["Descripción breve del hecho"]))
-            })
-        df_resumen = pd.DataFrame(resumen).sort_values("Apellido y Nombre")
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, sheet_name="Base de datos", index=False)
-            df_resumen.to_excel(writer, sheet_name="Resumen por empleado", index=False)
-        st.success("✅ Procesamiento completado.")
-        st.download_button("Descargar Excel generado", data=output.getvalue(), file_name="FordFiorasi_Antecedentes.xlsx")
-        st.dataframe(df_resumen)
-''')
+        data["Tipo de Antecedente"] = "Otro"
 
-# === Archivo: requirements.txt ===
-requirements = '''\
-streamlit
-pandas
-python-docx
-PyPDF2
-openpyxl
-pillow
-'''
+    # --- Contestación ---
+    if "contesta" in texto or "descargo presentado" in texto or "responde" in texto:
+        data["Contestación"] = "Sí"
 
-# === Archivo: README_INSTALACION.txt ===
-readme = '''\
-FORD FIORASI – PROCESADOR DE ANTECEDENTES DISCIPLINARIOS
---------------------------------------------------------
+    # --- Resumen ---
+    resumen = " ".join(texto.split()[:40]) + "..."
+    data["Resumen"] = resumen
 
-USO LOCAL:
-1. Instalar dependencias:
-   pip install -r requirements.txt
-2. Ejecutar:
-   streamlit run app_fiorasi_web.py
+    return data
 
-USO ONLINE (STREAMLIT CLOUD):
-1. Crear un repositorio en GitHub llamado "ford-fiorasi-antecedentes".
-2. Subir estos archivos.
-3. Ir a https://streamlit.io/cloud, conectar tu cuenta GitHub y desplegar la app.
-4. Listo: tendrás una URL tipo https://ford-fiorasi-antecedentes.streamlit.app
-'''
+if archivos:
+    registros = []
+    for archivo in archivos:
+        if archivo.type == "application/pdf":
+            contenido = extraer_texto_pdf(archivo)
+        else:
+            contenido = extraer_texto_docx(archivo)
+        datos = procesar_archivo(archivo.name, contenido)
+        registros.append(datos)
 
-# === Crear archivos ===
-files = {
-    "app_fiorasi_web.py": app_code,
-    "requirements.txt": requirements,
-    "README_INSTALACION.txt": readme,
-}
-for name, content in files.items():
-    with open(os.path.join(base, name), "w", encoding="utf-8") as f:
-        f.write(content)
+    # Crear DataFrame y ordenar
+    df = pd.DataFrame(registros)
+    df.sort_values(by="Apellido y Nombre", inplace=True)
 
-# === Crear ZIP ===
-zip_name = base + ".zip"
-with ZipFile(zip_name, "w") as zipf:
-    for filename in files:
-        zipf.write(os.path.join(base, filename), arcname=os.path.join(base, filename))
+    # Mostrar en pantalla
+    st.success(f"✅ Se procesaron {len(df)} archivos correctamente.")
+    st.dataframe(df)
 
-print(f"✅ Proyecto generado correctamente: {zip_name}")
-print("Podés subirlo directamente a Streamlit Cloud.")
+    # Generar Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Base de Datos", index=False)
+        resumen = df[["Apellido y Nombre", "Resumen"]]
+        resumen.to_excel(writer, sheet_name="Resumen de Casos", index=False)
+
+    st.download_button(
+        label="📥 Descargar Excel procesado",
+        data=output.getvalue(),
+        file_name="FordFiorasi_Antecedentes.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+else:
+    st.info("Subí los archivos PDF o Word para comenzar el procesamiento.")
